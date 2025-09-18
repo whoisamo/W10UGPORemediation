@@ -77,3 +77,4 @@ catch {
     Write-Log "Detection result: Non-Compliant (due to error)"
     Write-Output "Non-Compliant"
 }
+
