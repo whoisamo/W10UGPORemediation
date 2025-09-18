@@ -129,4 +129,3 @@ catch {
     # Exit with error code
     exit 1
 }
-
