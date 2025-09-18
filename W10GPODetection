@@ -1,0 +1,79 @@
+# SCCM Configuration Item - Detection Script
+# This script checks if any of the Windows Update GPO registry values exist
+# Return: "Compliant" if no values exist, "Non-Compliant" if any values are found
+
+# Write-Log function for SCCM CCM\Logs integration
+function Write-Log {
+    param(
+        [string]$Message,
+        [ValidateSet("INFO", "WARN", "ERROR", "DEBUG")]
+        [string]$Level = "INFO",
+        [string]$LogPath = "C:\Windows\CCM\Logs\WUGPODetection.log"
+    )
+    
+    $LogEntry = "<![LOG[$Message]LOG]!><time=`"$(Get-Date -Format 'HH:mm:ss.ffffff')`" date=`"$(Get-Date -Format 'M-d-yyyy')`" component=`"WUGPODetection`" context=`"`" type=`"$(if($Level -eq 'ERROR'){3}elseif($Level -eq 'WARN'){2}else{1})`" thread=`"$PID`" file=`"`">"
+    
+    try {
+        Add-Content -Path $LogPath -Value $LogEntry -Encoding UTF8 -ErrorAction SilentlyContinue
+    }
+    catch {
+        # Silently continue if logging fails
+    }
+}
+
+$RegistryPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+$ValuesToCheck = @(
+    "BranchReadinessLevel",
+    "DeferFeatureUpdates", 
+    "DeferFeatureUpdatesPeriodInDays",
+    "DisableDualScan",
+    "PauseFeatureUpdatesStartTime"
+)
+
+try {
+    Write-Log "Starting Windows Update GPO registry detection check"
+    Write-Log "Checking registry path: $RegistryPath"
+    
+    # Check if the registry path exists
+    if (-not (Test-Path $RegistryPath)) {
+        Write-Log "Registry path does not exist - no GPO values present"
+        Write-Log "Detection result: Compliant"
+        Write-Output "Compliant"
+        exit 0
+    }
+    
+    Write-Log "Registry path exists, checking individual values"
+    $FoundValues = @()
+    
+    # Check each registry value
+    foreach ($ValueName in $ValuesToCheck) {
+        try {
+            $Value = Get-ItemProperty -Path $RegistryPath -Name $ValueName -ErrorAction SilentlyContinue
+            if ($Value) {
+                $FoundValues += $ValueName
+                Write-Log "Found GPO value: $ValueName = $($Value.$ValueName)" "WARN"
+            } else {
+                Write-Log "GPO value not present: $ValueName" "DEBUG"
+            }
+        }
+        catch {
+            Write-Log "Error checking value $ValueName`: $($_.Exception.Message)" "ERROR"
+            continue
+        }
+    }
+    
+    if ($FoundValues.Count -eq 0) {
+        Write-Log "No GPO values found - system is compliant"
+        Write-Log "Detection result: Compliant"
+        Write-Output "Compliant"
+    } else {
+        Write-Log "Found $($FoundValues.Count) GPO values: $($FoundValues -join ', ')" "WARN"
+        Write-Log "Detection result: Non-Compliant"
+        Write-Output "Non-Compliant"
+    }
+}
+catch {
+    Write-Log "Critical error during detection: $($_.Exception.Message)" "ERROR"
+    Write-Log "Detection result: Non-Compliant (due to error)"
+    Write-Output "Non-Compliant"
+}

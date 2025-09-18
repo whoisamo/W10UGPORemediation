@@ -1,0 +1,131 @@
+# SCCM Configuration Item - Remediation Script
+# This script removes the Windows Update GPO registry values
+# Should only run when detection script returns "Non-Compliant"
+
+# Write-Log function for SCCM CCM\Logs integration
+function Write-Log {
+    param(
+        [string]$Message,
+        [ValidateSet("INFO", "WARN", "ERROR", "DEBUG")]
+        [string]$Level = "INFO",
+        [string]$LogPath = "C:\Windows\CCM\Logs\WUGPORemediation.log"
+    )
+    
+    $LogEntry = "<![LOG[$Message]LOG]!><time=`"$(Get-Date -Format 'HH:mm:ss.ffffff')`" date=`"$(Get-Date -Format 'M-d-yyyy')`" component=`"WUGPORemediation`" context=`"`" type=`"$(if($Level -eq 'ERROR'){3}elseif($Level -eq 'WARN'){2}else{1})`" thread=`"$PID`" file=`"`">"
+    
+    try {
+        Add-Content -Path $LogPath -Value $LogEntry -Encoding UTF8 -ErrorAction SilentlyContinue
+    }
+    catch {
+        # Silently continue if logging fails
+    }
+}
+
+$RegistryPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+$ValuesToRemove = @(
+    "BranchReadinessLevel",
+    "DeferFeatureUpdates", 
+    "DeferFeatureUpdatesPeriodInDays",
+    "DisableDualScan",
+    "PauseFeatureUpdatesStartTime"
+)
+
+try {
+    Write-Log "Starting Windows Update GPO registry remediation"
+    Write-Log "Target registry path: $RegistryPath"
+    
+    # Check if registry path exists
+    if (-not (Test-Path $RegistryPath)) {
+        Write-Log "Registry path does not exist - nothing to remediate"
+        exit 0
+    }
+    
+    Write-Log "Registry path exists, proceeding with value removal"
+    $RemovedCount = 0
+    $Errors = @()
+    
+    # Remove each registry value
+    foreach ($ValueName in $ValuesToRemove) {
+        try {
+            # Check if the value exists before attempting removal
+            $Value = Get-ItemProperty -Path $RegistryPath -Name $ValueName -ErrorAction SilentlyContinue
+            
+            if ($Value) {
+                $CurrentValue = $Value.$ValueName
+                Write-Log "Found GPO value to remove: $ValueName = $CurrentValue"
+                
+                # Remove the registry value
+                Remove-ItemProperty -Path $RegistryPath -Name $ValueName -Force -ErrorAction Stop
+                $RemovedCount++
+                Write-Log "Successfully removed GPO value: $ValueName"
+            } else {
+                Write-Log "GPO value not found (may have been removed already): $ValueName" "DEBUG"
+            }
+        }
+        catch {
+            $ErrorMsg = "Failed to remove $ValueName`: $($_.Exception.Message)"
+            $Errors += $ErrorMsg
+            Write-Log $ErrorMsg "ERROR"
+        }
+    }
+    
+    Write-Log "Registry cleanup completed. Values removed: $RemovedCount, Errors: $($Errors.Count)"
+    
+    # Optional: Restart Windows Update service if any values were removed
+    if ($RemovedCount -gt 0) {
+        Write-Log "Attempting to restart Windows Update service to apply changes"
+        try {
+            # Stop and start the service to apply changes
+            Stop-Service -Name "wuauserv" -Force -ErrorAction SilentlyContinue
+            Write-Log "Windows Update service stopped"
+            Start-Sleep -Seconds 2
+            Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue
+            Write-Log "Windows Update service restarted successfully"
+        }
+        catch {
+            Write-Log "Failed to restart Windows Update service: $($_.Exception.Message)" "WARN"
+            # Service restart failed, but registry cleanup succeeded - this is non-critical
+        }
+    }
+    
+    # Log results to Windows Event Log for additional SCCM reporting
+    $EventMessage = "Windows Update GPO Registry Cleanup: Removed $RemovedCount values"
+    if ($Errors.Count -gt 0) {
+        $EventMessage += ". Errors: " + ($Errors -join "; ")
+        Write-Log "Remediation completed with errors" "WARN"
+    } else {
+        Write-Log "Remediation completed successfully"
+    }
+    
+    try {
+        # Create event log entry (appears in SCCM logs and Windows Event Viewer)
+        Write-EventLog -LogName "Application" -Source "WSH" -EventId 1001 -EntryType Information -Message $EventMessage
+        Write-Log "Event log entry created successfully"
+    }
+    catch {
+        Write-Log "Failed to create event log entry: $($_.Exception.Message)" "WARN"
+        # Event log write failed - not critical
+    }
+    
+    Write-Log "Remediation script completed successfully"
+    # Exit successfully
+    exit 0
+}
+catch {
+    # Critical error occurred
+    $ErrorMessage = "Windows Update GPO Registry Cleanup failed: $($_.Exception.Message)"
+    Write-Log $ErrorMessage "ERROR"
+    
+    try {
+        Write-EventLog -LogName "Application" -Source "WSH" -EventId 1002 -EntryType Error -Message $ErrorMessage
+        Write-Log "Error event log entry created"
+    }
+    catch {
+        Write-Log "Failed to create error event log entry: $($_.Exception.Message)" "ERROR"
+        # Event log write failed - not critical
+    }
+    
+    Write-Log "Remediation script failed - exiting with error code 1" "ERROR"
+    # Exit with error code
+    exit 1
+}
